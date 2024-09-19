@@ -1,126 +1,112 @@
-import pytube as pt
+from slugify import slugify
+from typing import Self
+from multiprocessing import Process
 import sys
+import subprocess
 import os
-import re
-import unicodedata
+import json
 import eyed3
 import urllib.request
 
 
-def slugify(value, allow_unicode=False) -> str:
-    """
-    Taken from https://github.com/django/django/blob/master/django/utils/text.py
-    Convert to ASCII if 'allow_unicode' is False. Convert spaces or repeated
-    dashes to single dashes. Remove characters that aren't alphanumerics,
-    underscores, or hyphens. Convert to lowercase. Also strip leading and
-    trailing whitespace, dashes, and underscores.
-    """
-    value = str(value)
-    if allow_unicode:
-        value = unicodedata.normalize("NFKC", value)
-    else:
-        value = (
-            unicodedata.normalize("NFKD", value)
-            .encode("ascii", "ignore")
-            .decode("ascii")
+class Playlist:
+    def __init__(self, add_metadata: bool = True):
+        self.videos: list[dict] = []  # type: ignore
+        self.name: str
+        self.length: int
+        self.metadata: bool = add_metadata
+
+    def __process_video(
+        self, video: dict, index: int, directory: str
+    ) -> None:
+        file_path: str = os.path.join(directory, f"{slugify(video["title"])}.mp3")
+        args: list[str] = [
+                ".\\yt-dlp.exe",
+                "--extract-audio",
+                "--audio-format", "mp3",
+                "--output", file_path,
+                video["url"]
+            ]
+        subprocess.run(
+            args
         )
-    value = re.sub(r"[^\w\s-]", "", value.lower())
-    return re.sub(r"[-\s]+", "-", value).strip("-_")
+        if not self.metadata:
+            return
 
+        try:
+            audiofile: eyed3.mp3.Mp3AudioFile = eyed3.load(file_path)
+            audiofile.initTag(version=(2, 3, 0))
+            audiofile.tag.title = video.get("title", "Unknown")
+            audiofile.tag.artist = video.get("artist", video.get("uploader", "???"))
+            audiofile.tag.album = video.get("album", video.get("channel", "???"))
+            audiofile.tag.album_artist = video.get("album_artist", video.get("uploader", "???"))
+            audiofile.tag.composer = video.get("composer")
+            audiofile.tag.genre = video.get("genre")
+            audiofile.tag.play_count = video.get("view_count")
+            audiofile.tag.copyrigth = video.get("copyright")
+            audiofile.tag.track_num = index + 1, self.length
 
-# playlist = pt.Playlist("https://www.youtube.com/playlist?list=PL7_XL8L2PxkolJPc__sZgkAl0_qLQBc-x")
+            release_date: str = video.get("release_date", "20000101")
+            audiofile.tag.release_date = eyed3.core.Date(int(release_date[:4]), int(release_date[4:6]), int(release_date[6:8]))
 
-# # Check if folder exists
-# folder = slugify(playlist.title)
-# if not os.path.exists(folder):
-#     os.mkdir(folder)
-
-# for i, video in enumerate(playlist.videos):
-#     file_name = slugify(video.title)
-#     stream = video.streams.filter(only_audio=True).first()
-#     stream.download(output_path=folder, filename=file_name + ".mp3")
-
-#     audiofile = eyed3.load(os.path.join(os.path.join(folder, file_name + ".mp3")))
-#     if audiofile:
-#         if not audiofile.tag:
-#             audiofile.initTag()
-
-#         audiofile.tag.title = video.title
-#         audiofile.tag.artist = video.author
-#         audiofile.tag.album = playlist.title
-#         audiofile.tag.album_artist = playlist.owner
-#         audiofile.tag.track_num = (i + 1, playlist.length)
-
-#         thumbnail = urllib.request.urlopen(video.thumbnail_url)
-#         imagedata = thumbnail.read()
-#         audiofile.tag.images.set(3, imagedata, "image/jpeg", "cover")
-
-#         audiofile.tag.save()
-
-
-class PlaylistDownloader:
-    def __init__(self, url: str, metadata=True) -> None:
-        """Download a Youtube playlist as music files
-
-        Args:
-            url (str): The playlist url.
-            metadata (bool, optional): Add ID3 metadata tags. Defaults to True.
-        """
-
-        self.playlist = pt.Playlist(url)
-        self.metadata = metadata
-
-    def download(self, output_folder: str = "", print_progress: bool = True):
-        """Download the entire playlist as .mp3 files
-
-        Args:
-            output_folder (str, optional): The output folder. Defaults to a slugified version of the playlist's title.
-        """
-        if output_folder == "":
-            output_folder = slugify(self.playlist.title)
-
-        if not os.path.exists(output_folder):
-            os.mkdir(output_folder)
-
-        for i, video in enumerate(self.playlist.videos):
-            file_name = slugify(video.title)
-            stream = video.streams.filter(only_audio=True).first()
-            stream.download(output_path=output_folder, filename=file_name + ".mp3")
-
-            if self.metadata:
-                self.__add_tags(
-                    os.path.join(output_folder, file_name + ".mp3"), video, i + 1
-                )
-
-            print("Downloaded: ", video.title)
-
-    def __add_tags(self, file_path: str, video: pt.YouTube, index: int = None):
-        audiofile = eyed3.load(file_path)
-
-        if audiofile:
-            if not audiofile.tag:
-                audiofile.initTag()
-
-            audiofile.tag.title = video.title
-            audiofile.tag.artist = video.author
-            audiofile.tag.album = self.playlist.title
-            audiofile.tag.album_artist = self.playlist.owner
-            if index != None:
-                audiofile.tag.track_num = (index, self.playlist.length)
-
-            thumbnail = urllib.request.urlopen(video.thumbnail_url)
-            imagedata = thumbnail.read()
-            audiofile.tag.images.set(3, imagedata, "image/jpeg", "cover")
+            if video["thumbnails"]:
+                thumb_response = urllib.request.urlopen(video["thumbnails"][-1]["url"])
+                thumbnail = thumb_response.read()
+                audiofile.tag.images.set(3, thumbnail, "image/webp", description="cover")
 
             audiofile.tag.save()
+            print("ID3 Tags set")
+        except IOError as e:
+            print("Couldn't load mp3", video["title"], f"\n{e}")
+
+
+    def fetch(self, url: str) -> Self:
+        res: subprocess.CompletedProcess = subprocess.run(
+            [
+                ".\\yt-dlp.exe",
+                "--flat-playlist",
+                "-j",
+                playlist_link,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            universal_newlines=True,
+        )
+        output: str = res.stdout.strip().split("\n")
+        if not len(output) or not any([bool(i) for i in output]):
+            raise Exception("Could not fetch playlist or playlist is empty")
+
+        vid: str
+        for vid in output:
+            self.videos.append(json.loads(vid))
+
+        self.name = slugify(self.videos[0]["playlist_title"])
+        self.length = len(self.videos)
+
+        return self
+
+    def download(self) -> Self:
+        if not self.length:
+            raise Exception("No data has been fetched or playlist is empty.")
+
+        if not os.path.exists(self.name):
+            os.mkdir(self.name)
+
+        for i, video in enumerate(self.videos):
+            self.__process_video(video, i, self.name)
+
+        return self
+
 
 
 if __name__ == "__main__":
-    url = input("Insert playlist url: ")
-    metadata = True
-    if input("Add metadata tags? (Leave blank for yes, type anything for no): ") != "":
-        metadata = False
+    playlist_link: str
+    if len(sys.argv) > 1:
+        playlist_link = sys.argv[1]
+    else:
+        playlist_link = input("Link to the playlist: ")
+    
+    if not playlist_link:
+        raise Exception("No link was passed")
 
-    playlist = PlaylistDownloader(url, metadata)
-    playlist.download()
-    print("Done.")
+    playlist: Playlist = Playlist(add_metadata = not ("--no-metadata" in sys.argv)).fetch(playlist_link).download()

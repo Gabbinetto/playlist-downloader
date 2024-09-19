@@ -1,14 +1,3 @@
-# Playlist downloader
+Python class to download a YouTube playlist as .mp3 files. Requires [yt-dlp](https://github.com/yt-dlp/yt-dlp) executable to be in the same folder.
 
-Simple script used to download a Youtube playlist as .mp3 files.
-
-## Requirements
-
-- **Python 3.7+** (Tested with 3.11)
-- **eyeD3** module
-- **pytube** module
-
-## Usage
-
-Just run the `playlist-downloader.py` file and the program will ask you to insert the playlist url.
-It can also be imported to use the `PlaylistDownloader` class in other scripts.
+Run `playlist-downloader.py`. If no link is passed as argument, it will be asked.
