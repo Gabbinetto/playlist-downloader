@@ -3,6 +3,7 @@ from typing import Self
 from multiprocessing import Process
 import sys
 import subprocess
+import concurrent.futures
 import os
 import json
 import eyed3
@@ -11,12 +12,13 @@ import getopt
 
 
 class Playlist:
-    def __init__(self, add_metadata: bool = True, m3u: bool = True):
+    def __init__(self, add_metadata: bool = True, m3u: bool = True, threads: int = 10):
         self.videos: list[dict] = []  # type: ignore
         self.name: str
         self.length: int
         self.metadata: bool = add_metadata
         self.make_m3u: bool = m3u
+        self.threads: int = threads
 
         if not os.path.exists("yt-dlp.exe"):
             print("yt-dlp.exe not found. Downloading executable from github.com...")
@@ -115,13 +117,16 @@ class Playlist:
         if not os.path.exists(self.name):
             os.mkdir(self.name)
 
-        for i, video in enumerate(self.videos):
-            self.__process_video(video, i, self.name)
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.threads
+        ) as executor:
+            for i, video in enumerate(self.videos):
+                executor.submit(self.__process_video, video, i, self.name)
 
         return self
 
     def save_m3u(self) -> Self:
-        m3u: self.M3U = self.M3U(self.name + ".m3u8")
+        m3u: M3U = M3U(self.name + ".m3u8")
         for i, video in enumerate(self.videos):
             file_path: str = self.name + "/" + f"{slugify(video["title"])}.mp3"
             m3u.add_track(file_path, i + 1, video["title"])
@@ -129,26 +134,27 @@ class Playlist:
 
         return self
 
-    class M3U:
-        def __init__(self, path: str = "") -> None:
-            self.path: str = path
-            self.content: list[dict] = []
 
-        def add_track(self, song_filename: str, track_num: int, name: str = "") -> None:
-            song: dict = {
-                "path": song_filename,
-                "track_num": track_num,
-                "name": name if name != "" else f"Track {track_num}",
-            }
-            self.content.append(song)
-            self.content.sort(key=lambda item: item["track_num"])
+class M3U:
+    def __init__(self, path: str = "") -> None:
+        self.path: str = path
+        self.content: list[dict] = []
 
-        def save(self) -> None:
-            with open(self.path, "w", encoding="utf-8") as f:
-                f.write("#EXTM3U\n")
-                song: dict
-                for song in self.content:
-                    f.write(f"#EXTINF:-1, {song['name']}\n{song['path']}\n")
+    def add_track(self, song_filename: str, track_num: int, name: str = "") -> None:
+        song: dict = {
+            "path": song_filename,
+            "track_num": track_num,
+            "name": name if name != "" else f"Track {track_num}",
+        }
+        self.content.append(song)
+        self.content.sort(key=lambda item: item["track_num"])
+
+    def save(self) -> None:
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("#EXTM3U\n")
+            song: dict
+            for song in self.content:
+                f.write(f"#EXTINF:-1, {song['name']}\n{song['path']}\n")
 
 
 if __name__ == "__main__":
@@ -158,6 +164,7 @@ if __name__ == "__main__":
     metadata: bool = True
     m3u: bool = True
     m3u_only: bool = False
+    threads: int = 5
 
     if "--no-meta" in args:
         args.remove("--no-meta")
@@ -168,12 +175,17 @@ if __name__ == "__main__":
     if "--m3u-only" in args:
         args.remove("--m3u-only")
         m3u_only = True
+    if "--threads" in args:
+        idx: int = args.index("--threads")
+        threads = int(args.pop(idx + 1))
+        args.remove("--threads")
+
     if len(args) > 0:
         link = args[0]
     if link == "":
         link = input("Input playlist link: ")
 
-    playlist = Playlist(metadata, m3u)
+    playlist = Playlist(metadata, m3u, threads)
     playlist.fetch(link)
     if not m3u_only:
         playlist.download()

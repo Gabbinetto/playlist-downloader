@@ -9,6 +9,7 @@ Valid arguments:
 - **--no-meta**: won't add ID3 metadata to the `.mp3` files
 - **--no-m3u**: won't generate the `.m3u8` file
 - **--m3u-only**: will only generate the `.m3u8` file
+- **--threads**: number of threads to use, followed by the number of threads (Default: 10)
 
 ### Example
 If the user wants to download a playlist called "Cool playlist" that contains these songs:
