@@ -2,3 +2,5 @@
 yt-dlp.exe
 build/
 dist/
+.python-version
+.venv/

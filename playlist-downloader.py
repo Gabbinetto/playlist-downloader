@@ -1,193 +1,208 @@
+from typing import Self, Any
+import mutagen.id3
 from slugify import slugify
-from typing import Self
-from multiprocessing import Process
-import sys
-import subprocess
-import concurrent.futures
-import os
-import json
-import eyed3
+from mutagen.id3 import TIT2, COMM, TOPE, TPE1, APIC, TRCK, TCOM, TCON, TOAL, TDAT
+from mutagen.mp3 import MP3
+import mutagen
+import yt_dlp as yt
+import json, os
 import urllib.request
-import getopt
 
 
-class Playlist:
-    def __init__(self, add_metadata: bool = True, m3u: bool = True, threads: int = 10):
-        self.videos: list[dict] = []  # type: ignore
-        self.name: str
-        self.length: int
-        self.metadata: bool = add_metadata
-        self.make_m3u: bool = m3u
-        self.threads: int = threads
+url = "https://music.youtube.com/playlist?list=PL7_XL8L2PxkolJPc__sZgkAl0_qLQBc-x&si=OcrdA6VLenGT0FY0"
 
-        if not os.path.exists("yt-dlp.exe"):
-            print("yt-dlp.exe not found. Downloading executable from github.com...")
-            request = urllib.request.urlopen(
-                "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-            )
-            with open("yt-dlp.exe", "wb") as f:
-                f.write(request.read())
+OUTPUT_PATH: str = "output"
 
-    def __process_video(self, video: dict, index: int, directory: str) -> str:
-        print(f"Processing {video['title']}...")
-        file_path: str = os.path.join(directory, f"{slugify(video["title"])}.mp3")
-        args: list[str] = [
-            ".\\yt-dlp.exe",
-            "--extract-audio",
-            "--audio-format",
-            "mp3",
-            "--output",
-            file_path,
-            video["url"],
-        ]
-        subprocess.run(args, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if not self.metadata:
-            print(f"{video['title']} downloaded.")
-            return file_path
 
-        try:
-            print("Writing ID3 tags...")
-            audiofile: eyed3.mp3.Mp3AudioFile = eyed3.load(file_path)
-            audiofile.initTag(version=(2, 3, 0))
-            audiofile.tag.title = video.get("title", "Unknown")
-            audiofile.tag.artist = video.get("artist", video.get("uploader", "???"))
-            audiofile.tag.album = video.get("album", video.get("channel", "???"))
-            audiofile.tag.album_artist = video.get(
-                "album_artist", video.get("uploader", "???")
-            )
-            audiofile.tag.composer = video.get("composer")
-            audiofile.tag.genre = video.get("genre")
-            audiofile.tag.play_count = video.get("view_count")
-            audiofile.tag.copyrigth = video.get("copyright")
-            audiofile.tag.track_num = index + 1, self.length
+# Taken from the GitHub
+class Logger:
+    def debug(self, msg: str):
+        if msg.startswith("[debug] "):
+            pass
+        else:
+            self.info(msg)
 
-            release_date: str = video.get("release_date", "20000101")
-            audiofile.tag.release_date = eyed3.core.Date(
-                int(release_date[:4]), int(release_date[4:6]), int(release_date[6:8])
-            )
+    def info(self, msg: str):
+        pass
 
-            if video["thumbnails"]:
-                thumb_response = urllib.request.urlopen(video["thumbnails"][-1]["url"])
-                thumbnail = thumb_response.read()
-                audiofile.tag.images.set(
-                    3, thumbnail, "image/webp", description="cover"
-                )
+    def warning(self, msg: str):
+        print(msg)
 
-            audiofile.tag.save()
-            print("ID3 Tags written.")
-        except IOError as e:
-            print("Couldn't load mp3", video["title"], f"\n{e}")
+    def error(self, msg: str):
+        print(msg)
 
-        print(f"{video['title']} downloaded.")
-        return file_path
 
-    def fetch(self, url: str) -> Self:
-        print("Getting playlist data...")
-        res: subprocess.CompletedProcess = subprocess.run(
-            [
-                ".\\yt-dlp.exe",
-                "--flat-playlist",
-                "-j",
-                url,
+class PlaylistDownloader:
+
+    def __init__(
+        self, playlist_url: str, json_info_file: str = None, add_metadata: bool = True
+    ):
+
+        self.url = playlist_url
+        self.raw_info: dict[str, Any] = {}
+        self.info: dict[str, Any] = {}
+        self.output_folder: str = ""
+        self.metadata = add_metadata
+
+        self.options = {
+            "quiet": True,
+            "logger": Logger(),
+            "progress_hooks": [self.__hook],
+            "format": "mp3/bestaudio/best",
+            "postprocessors": [
+                {  # Extract audio using ffmpeg
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                }
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            universal_newlines=True,
-        )
-        output: str = res.stdout.strip().split("\n")
-        if not len(output) or not any([bool(i) for i in output]):
-            raise Exception("Could not fetch playlist or playlist is empty")
+        }
 
-        vid: str
-        for vid in output:
-            video: dict = json.loads(vid)
-            if video["title"] == "[Deleted video]":
-                continue
-            self.videos.append(video)
+        if json_info_file != None:
+            with open(json_info_file, "r", encoding="utf-8") as f:
+                self.raw_info = json.load(f)
 
-        self.name = slugify(self.videos[0]["playlist_title"])
-        self.length = len(self.videos)
+    def __hook(self, d: dict) -> None:
+        if d["status"] == "finished":
+            print("Done downloading, now post-processing...")
+
+    def fetch_info(self, cache_info: bool = False) -> Self:
+
+        with yt.YoutubeDL() as ydl:
+            raw = ydl.extract_info(self.url, download=False)
+            self.raw_info = json.loads(raw)
+
+        if cache_info:
+            with open("last_raw_fetch.json", "w", encoding="utf-8") as f:
+                json.dump(self.raw_info, f, indent=2)
 
         return self
+
+    def process_info(self) -> Self:
+
+        self.info["title"] = self.raw_info.get("title", "No title")
+        self.info["slug"] = slugify(self.info["title"])
+        self.output_folder = os.path.join(OUTPUT_PATH, self.info["slug"])
+        os.makedirs(self.output_folder, exist_ok=True)
+
+        entries: list[dict[str, Any]] = self.raw_info.get("entries", [])
+
+        self.info["count"] = len(entries)
+        self.info["songs"] = []
+
+        for entry in entries:
+            self.info["songs"].append(self.__process_entry(entry))
+
+        with open("test.json", "w", encoding="utf-8") as f:
+            json.dump(self.info, f, indent=2)
+
+        return self
+
+    def __process_entry(self, entry: dict) -> dict[str, Any]:
+        data: dict = {
+            "title": entry.get("title", "No song title"),
+            "url": entry.get("original_url", ""),
+            "comment": entry.get("description", ""),
+            "artists": entry.get("artists", []),
+            "index": entry.get("playlist_index", 0),
+            "album": entry.get("album", ""),
+            "genres": entry.get("genres", []),
+            "composers": entry.get("composers", []),
+        }
+
+        data["slug"] = slugify(data["title"])
+        data["filename"] = data["slug"] + ".mp3"
+        data["path"] = os.path.join(self.output_folder, data["filename"])
+        data["final_path"] = os.path.join(self.info["slug"], data["filename"])
+
+        date: str = entry.get("release_date", "")
+        if date:
+            data["date"] = date[-2:] + date[-4:-2]
+
+        thumbnails: list[dict[str, Any]] = entry.get("thumbnails", [])
+        for thumbnail in thumbnails[::-1]:
+            width, height = thumbnail.get("width", -1), thumbnail.get("height", -1)
+            if width != -1 and width == height:
+                data["thumbnail"] = thumbnail.get("url", "")
+                data["thumbnail_mime"] = "image/jpeg"
+                break
+        if not data.get("thumbnail"):
+            data["thumbnail"] = entry.get("thumbnail", "")
+            data["thumbnail_mime"] = "image/webp"
+
+        return data
 
     def download(self) -> Self:
-        if not self.length:
-            raise Exception("No data has been fetched or playlist is empty.")
 
-        if not os.path.exists(self.name):
-            os.mkdir(self.name)
-
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.threads
-        ) as executor:
-            for i, video in enumerate(self.videos):
-                executor.submit(self.__process_video, video, i, self.name)
+        for song in self.info["songs"]:
+            print(f"Downloading {song['title']}...")
+            self.__download_song(song)
+            print("Done.\n")
 
         return self
 
-    def save_m3u(self) -> Self:
-        m3u: M3U = M3U(self.name + ".m3u8")
-        for i, video in enumerate(self.videos):
-            file_path: str = self.name + "/" + f"{slugify(video["title"])}.mp3"
-            m3u.add_track(file_path, i + 1, video["title"])
-        m3u.save()
+    def __download_song(self, song: dict[str, Any]) -> None:
+        options = dict(self.options)
+        options["outtmpl"] = {"default": song["path"][:-4]}
 
-        return self
+        with yt.YoutubeDL(options) as ytd:
+            try:
+                ytd.download([song["url"]])
+                if self.metadata:
+                    print("Adding metadata...")
+                    self.__add_metadata(song["path"], song)
+            except yt.utils.DownloadError as e:
+                print("Couldn't download", song["title"], "\b:", e)
 
+    def __add_metadata(self, path: str, song: dict[str, Any]) -> None:
+        audiofile: MP3 = MP3(path)
+        if not audiofile.tags:
+            audiofile.add_tags()
 
-class M3U:
-    def __init__(self, path: str = "") -> None:
-        self.path: str = path
-        self.content: list[dict] = []
+        audiofile.tags.add(TIT2(text=[song["title"]]))
+        audiofile.tags.add(COMM(text=[song["comment"]]))
+        audiofile.tags.add(TOAL(text=[song["album"]]))
+        if song.get("date"):
+            audiofile.tags.add(TDAT(text=[song["date"]]))
+        if song["artists"]:
+            audiofile.tags.add(TOPE(text=["/".join(song["artists"])]))
+            audiofile.tags.add(TPE1(text=[song["artists"][0]]))
+        audiofile.tags.add(TRCK(text=[f"{song['index']}/{self.info['count']}"]))
+        if song["composers"]:
+            audiofile.tags.add(TCOM(text=["/".join(song["composers"])]))
+        if song["genres"]:
+            genre_frame = TCON()
+            genre_frame.genres = song["genres"]
+            audiofile.tags.add(genre_frame)
 
-    def add_track(self, song_filename: str, track_num: int, name: str = "") -> None:
-        song: dict = {
-            "path": song_filename,
-            "track_num": track_num,
-            "name": name if name != "" else f"Track {track_num}",
-        }
-        self.content.append(song)
-        self.content.sort(key=lambda item: item["track_num"])
+        # Thumbnail
+        if song.get("thumbnail"):
+            request = urllib.request.urlopen(song["thumbnail"])
+            data = request.read()
+            print("Read thumbnail")
+            frame = APIC(
+                mime=song["thumbnail_mime"],
+                type=3,
+                desc="cover",
+                data=data,
+            )
+            audiofile.tags.add(frame)
 
-    def save(self) -> None:
-        with open(self.path, "w", encoding="utf-8") as f:
+        audiofile.save()
+
+    def make_m3u8(self) -> Self:
+        with open(
+            os.path.join(self.output_folder, self.info["slug"] + ".m3u8"),
+            "w",
+            encoding="utf-8",
+        ) as f:
             f.write("#EXTM3U\n")
-            song: dict
-            for song in self.content:
-                f.write(f"#EXTINF:-1, {song['name']}\n{song['path']}\n")
+            f.write(f"#PLAYLIST:{self.info['title']}\n")
+            for song in self.info["songs"]:
+                f.write(f"#EXTINF:-1, {song['title']}\n{song['filename']}\n")
 
 
 if __name__ == "__main__":
-    args: list[str] = sys.argv[1:]
-
-    link: str = ""
-    metadata: bool = True
-    m3u: bool = True
-    m3u_only: bool = False
-    threads: int = 5
-
-    if "--no-meta" in args:
-        args.remove("--no-meta")
-        metadata = False
-    if "--no-m3u" in args:
-        args.remove("--no-m3u")
-        m3u = False
-    if "--m3u-only" in args:
-        args.remove("--m3u-only")
-        m3u_only = True
-    if "--threads" in args:
-        idx: int = args.index("--threads")
-        threads = int(args.pop(idx + 1))
-        args.remove("--threads")
-
-    if len(args) > 0:
-        link = args[0]
-    if link == "":
-        link = input("Input playlist link: ")
-
-    playlist = Playlist(metadata, m3u, threads)
-    playlist.fetch(link)
-    if not m3u_only:
-        playlist.download()
-    if m3u:
-        playlist.save_m3u()
+    playlist = PlaylistDownloader(url, "test2.json")
+    playlist.process_info()
+    playlist.make_m3u8()
+    playlist.download()
