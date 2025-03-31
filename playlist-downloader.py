@@ -5,17 +5,21 @@ from mutagen.id3 import TIT2, COMM, TOPE, TPE1, APIC, TRCK, TCOM, TCON, TOAL, TD
 from mutagen.mp3 import MP3
 import mutagen
 import yt_dlp as yt
-import json, os
+import json, os, getopt, sys
 import urllib.request
 
 
-url = "https://music.youtube.com/playlist?list=PL7_XL8L2PxkolJPc__sZgkAl0_qLQBc-x&si=OcrdA6VLenGT0FY0"
-
 OUTPUT_PATH: str = "output"
+LOG_FILE: str = "playlist.log"
 
 
 # Taken from the GitHub
 class Logger:
+
+    def __init__(self):
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            f.write("LOG START\n")
+
     def debug(self, msg: str):
         if msg.startswith("[debug] "):
             pass
@@ -23,13 +27,18 @@ class Logger:
             self.info(msg)
 
     def info(self, msg: str):
-        pass
+        with open(LOG_FILE, "w+", encoding="utf-8") as f:
+            f.write(msg)
 
     def warning(self, msg: str):
         print(msg)
+        with open(LOG_FILE, "w+", encoding="utf-8") as f:
+            f.write(msg)
 
     def error(self, msg: str):
         print(msg)
+        with open(LOG_FILE, "w+", encoding="utf-8") as f:
+            f.write(msg)
 
 
 class PlaylistDownloader:
@@ -43,10 +52,11 @@ class PlaylistDownloader:
         self.info: dict[str, Any] = {}
         self.output_folder: str = ""
         self.metadata = add_metadata
+        self.logger = Logger()
 
         self.options = {
             "quiet": True,
-            "logger": Logger(),
+            "logger": self.logger,
             "progress_hooks": [self.__hook],
             "format": "mp3/bestaudio/best",
             "postprocessors": [
@@ -201,8 +211,59 @@ class PlaylistDownloader:
                 f.write(f"#EXTINF:-1, {song['title']}\n{song['filename']}\n")
 
 
+def main():
+    url: str = ""
+    long: str = ["help", "cache-raw", "no-meta", "m3u8-only", "json-raw=", "url="]
+    options: str = "hcnmj:u:"
+
+    try:
+
+        arguments, values = getopt.getopt(sys.argv[1:], options, long)
+
+        json_info_file: str = None
+        add_metadata: bool = True
+        cache_raw: bool = False
+        m3u_only: bool = False
+
+        for argument, value in arguments:
+            if argument in ("-h", "--help"):
+                print(
+                    """
+    Options:
+        -h, --help:                                 Show this text.
+        -c, --cache-raw:                            Save the raw playlist info file in a JSON (raw_info.json).
+        -n, --no-meta:                              Don't add metadata, such as song title and cover image.
+        -m, --m3u8-only:                            Only generate the m3u8 file.
+        -j <FILE_PATH>, --json-raw=<FILE_PATH>      Instead of fetching the playlist JSON data, use a cached file, such as one cached with -c.
+        -u <PLAYLIST_URL>, --url=<PLAYLIST_URL>     The playlist url. If not set, it will be asked when the script is ran, unless a raw json is passed with -j.
+                    """
+                )
+                return
+            if argument in ("-c", "--cache-raw"):
+                cache_raw = True
+            if argument in ("-n", "--no-meta"):
+                add_metadata = False
+            if argument in ("-m", "--m3u8-only"):
+                m3u_only = True
+            if argument in ("-j", "--json-raw"):
+                json_info_file = value
+            if argument in ("-u", "--url"):
+                url = value
+
+        if not url and not json_info_file:
+            url = input("YouTube Music playlist url: ")
+
+        playlist = PlaylistDownloader(url, json_info_file, add_metadata)
+        if not json_info_file:
+            playlist.fetch_info(cache_raw)
+        playlist.process_info()
+        if not m3u_only:
+            playlist.download()
+        playlist.make_m3u8()
+
+    except getopt.error as e:
+        print(e)
+
+
 if __name__ == "__main__":
-    playlist = PlaylistDownloader(url, "test2.json")
-    playlist.process_info()
-    playlist.make_m3u8()
-    playlist.download()
+    main()

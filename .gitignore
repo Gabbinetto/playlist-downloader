@@ -4,3 +4,4 @@ build/
 dist/
 .python-version
 .venv/
+output/
