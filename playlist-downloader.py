@@ -1,12 +1,24 @@
 from typing import Self, Any
-import mutagen.id3
 from slugify import slugify
-from mutagen.id3 import TIT2, COMM, TOPE, TPE1, APIC, TRCK, TCOM, TCON, TOAL, TDAT
+from mutagen.id3 import (
+    TIT2,
+    COMM,
+    TOPE,
+    TPE1,
+    APIC,
+    TRCK,
+    TCOM,
+    TCON,
+    TOAL,
+    TDAT,
+    SYLT,
+    USLT,
+)
 from mutagen.mp3 import MP3
-import mutagen
 import yt_dlp as yt
 import json, os, getopt, sys
 import urllib.request
+import syncedlyrics as sl
 
 
 OUTPUT_PATH: str = "output"
@@ -44,7 +56,11 @@ class Logger:
 class PlaylistDownloader:
 
     def __init__(
-        self, playlist_url: str, json_info_file: str = None, add_metadata: bool = True
+        self,
+        playlist_url: str,
+        json_info_file: str = None,
+        add_metadata: bool = True,
+        add_lyrics: bool = True,
     ):
 
         self.url = playlist_url
@@ -52,6 +68,7 @@ class PlaylistDownloader:
         self.info: dict[str, Any] = {}
         self.output_folder: str = ""
         self.metadata = add_metadata
+        self.lyrics = add_lyrics
         self.logger = Logger()
 
         self.options = {
@@ -78,8 +95,7 @@ class PlaylistDownloader:
     def fetch_info(self, cache_info: bool = False) -> Self:
 
         with yt.YoutubeDL() as ydl:
-            raw = ydl.extract_info(self.url, download=False)
-            self.raw_info = json.loads(raw)
+            self.raw_info = ydl.extract_info(self.url, download=False)
 
         if cache_info:
             with open("last_raw_fetch.json", "w", encoding="utf-8") as f:
@@ -102,9 +118,6 @@ class PlaylistDownloader:
         for entry in entries:
             self.info["songs"].append(self.__process_entry(entry))
 
-        with open("test.json", "w", encoding="utf-8") as f:
-            json.dump(self.info, f, indent=2)
-
         return self
 
     def __process_entry(self, entry: dict) -> dict[str, Any]:
@@ -112,7 +125,7 @@ class PlaylistDownloader:
             "title": entry.get("title", "No song title"),
             "url": entry.get("original_url", ""),
             "comment": entry.get("description", ""),
-            "artists": entry.get("artists", []),
+            "artists": entry.get("artists", [entry.get("channel", "")]),
             "index": entry.get("playlist_index", 0),
             "album": entry.get("album", ""),
             "genres": entry.get("genres", []),
@@ -197,7 +210,32 @@ class PlaylistDownloader:
             )
             audiofile.tags.add(frame)
 
+        if self.lyrics:
+            self.__add_lyrics(audiofile, song["title"], song["artists"][0])
+
         audiofile.save()
+
+    def __add_lyrics(self, audiofile: MP3, name: str, artist: str) -> None:
+        print("Trying to add lyrics for", name)
+
+        lyrics = sl.search(f"[{name}] [{artist}]", synced_only=True)
+        if not lyrics:
+            lyrics = sl.search(f"[{name}] [{artist}]", plain_only=True)
+
+        if lyrics:
+            print("Lyrics found")
+
+        if not lyrics:
+            print("No lyrics found for", name)
+            return
+
+        audiofile.tags.add(
+            USLT(
+                text=lyrics,
+            )
+        )
+
+        print(f"Added lyrics for", name)
 
     def make_m3u8(self) -> Self:
         with open(
@@ -213,8 +251,16 @@ class PlaylistDownloader:
 
 def main():
     url: str = ""
-    long: str = ["help", "cache-raw", "no-meta", "m3u8-only", "json-raw=", "url="]
-    options: str = "hcnmj:u:"
+    long: str = [
+        "help",
+        "cache-raw",
+        "no-meta",
+        "m3u8-only",
+        "no-lyrics",
+        "json-raw=",
+        "url=",
+    ]
+    options: str = "hcnmlj:u:"
 
     try:
 
@@ -224,6 +270,7 @@ def main():
         add_metadata: bool = True
         cache_raw: bool = False
         m3u_only: bool = False
+        lyrics: bool = True
 
         for argument, value in arguments:
             if argument in ("-h", "--help"):
@@ -234,6 +281,7 @@ def main():
         -c, --cache-raw:                            Save the raw playlist info file in a JSON (raw_info.json).
         -n, --no-meta:                              Don't add metadata, such as song title and cover image.
         -m, --m3u8-only:                            Only generate the m3u8 file.
+        -l, --no-lyrics:                            Won't try to add lyrics through syncedlyrics.
         -j <FILE_PATH>, --json-raw=<FILE_PATH>      Instead of fetching the playlist JSON data, use a cached file, such as one cached with -c.
         -u <PLAYLIST_URL>, --url=<PLAYLIST_URL>     The playlist url. If not set, it will be asked when the script is ran, unless a raw json is passed with -j.
                     """
@@ -245,6 +293,8 @@ def main():
                 add_metadata = False
             if argument in ("-m", "--m3u8-only"):
                 m3u_only = True
+            if argument in ("-l", "--no-lyrics"):
+                lyrics = False
             if argument in ("-j", "--json-raw"):
                 json_info_file = value
             if argument in ("-u", "--url"):
@@ -253,7 +303,7 @@ def main():
         if not url and not json_info_file:
             url = input("YouTube Music playlist url: ")
 
-        playlist = PlaylistDownloader(url, json_info_file, add_metadata)
+        playlist = PlaylistDownloader(url, json_info_file, add_metadata, lyrics)
         if not json_info_file:
             playlist.fetch_info(cache_raw)
         playlist.process_info()
