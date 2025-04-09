@@ -12,6 +12,7 @@ Options:
     -c, --cache-raw:                            Save the raw playlist info file in a JSON (raw_info.json).
     -n, --no-meta:                              Don't add metadata, such as song title and cover image.
     -m, --m3u8-only:                            Only generate the m3u8 file.
+    -l, --no-lyrics:                            Won't try to add lyrics through syncedlyrics.
     -j <FILE_PATH>, --json-raw=<FILE_PATH>      Instead of fetching the playlist JSON data, use a cached file, such as one cached with -c.
     -u <PLAYLIST_URL>, --url=<PLAYLIST_URL>     The playlist url. If not set, it will be asked when the script is ran, unless a raw json is passed with -j.
 ```
