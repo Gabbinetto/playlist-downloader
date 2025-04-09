@@ -107,6 +107,16 @@ class PlaylistDownloader:
 
         self.info["title"] = self.raw_info.get("title", "No title")
         self.info["slug"] = slugify(self.info["title"])
+
+        for thumbnail in self.raw_info.get("thumbnails", [])[::-1]:
+            if (
+                thumbnail.get("width")
+                and thumbnail.get("height")
+                and (thumbnail["width"] == thumbnail["height"])
+            ):
+                self.info["thumbnail"] = thumbnail["url"]
+                break
+
         self.output_folder = os.path.join(OUTPUT_PATH, self.info["slug"])
         os.makedirs(self.output_folder, exist_ok=True)
 
@@ -245,8 +255,14 @@ class PlaylistDownloader:
         ) as f:
             f.write("#EXTM3U\n")
             f.write(f"#PLAYLIST:{self.info['title']}\n")
+            f.write(f"#EXTALBUMARTURL:cover.jpg\n")
             for song in self.info["songs"]:
                 f.write(f"#EXTINF:-1, {song['title']}\n{song['filename']}\n")
+        if self.info.get("thumbnail"):
+            with open(os.path.join(self.output_folder, "cover.jpg"), "wb") as f:
+                request = urllib.request.urlopen(self.info["thumbnail"])
+                data = request.read()
+                f.write(data)
 
 
 def main():
