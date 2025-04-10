@@ -11,7 +11,6 @@ from mutagen.id3 import (
     TCON,
     TOAL,
     TDAT,
-    SYLT,
     USLT,
 )
 from mutagen.mp3 import MP3
@@ -61,6 +60,7 @@ class PlaylistDownloader:
         json_info_file: str = None,
         add_metadata: bool = True,
         add_lyrics: bool = True,
+        difference: bool = False,
     ):
 
         self.url = playlist_url
@@ -70,6 +70,8 @@ class PlaylistDownloader:
         self.metadata = add_metadata
         self.lyrics = add_lyrics
         self.logger = Logger()
+        self.existing = []
+        self.difference = difference
 
         self.options = {
             "quiet": True,
@@ -166,7 +168,12 @@ class PlaylistDownloader:
 
     def download(self) -> Self:
 
+        if self.difference:
+            self.read_m3u8()
+
         for song in self.info["songs"]:
+            if song["final_path"] in self.existing and self.difference:
+                continue
             print(f"Downloading {song['title']}...")
             self.__download_song(song)
             print("Done.\n")
@@ -264,6 +271,21 @@ class PlaylistDownloader:
                 data = request.read()
                 f.write(data)
 
+    def read_m3u8(self) -> Self:
+        self.existing.clear()
+        with open(
+            os.path.join(self.output_folder, self.info["slug"] + ".m3u8"),
+            "r",
+            encoding="utf-8",
+        ) as f:
+            lines = f.readlines()
+            for i in range(0, len(lines) - 1):
+                if not lines[i].startswith("#EXTINF"):
+                    continue
+                self.existing.append(
+                    os.path.join(self.info["slug"], lines[i + 1].strip("\n"))
+                )
+
 
 def main():
     url: str = ""
@@ -273,10 +295,10 @@ def main():
         "no-meta",
         "m3u8-only",
         "no-lyrics",
-        "json-raw=",
+        "difference" "json-raw=",
         "url=",
     ]
-    options: str = "hcnmlj:u:"
+    options: str = "hcnmldj:u:"
 
     try:
 
@@ -287,6 +309,7 @@ def main():
         cache_raw: bool = False
         m3u_only: bool = False
         lyrics: bool = True
+        difference: bool = False
 
         for argument, value in arguments:
             if argument in ("-h", "--help"):
@@ -298,6 +321,7 @@ def main():
         -n, --no-meta:                              Don't add metadata, such as song title and cover image.
         -m, --m3u8-only:                            Only generate the m3u8 file.
         -l, --no-lyrics:                            Won't try to add lyrics through syncedlyrics.
+        -d, --difference:                           Download only the difference based on the existing .m3u8 file in the target directory.
         -j <FILE_PATH>, --json-raw=<FILE_PATH>      Instead of fetching the playlist JSON data, use a cached file, such as one cached with -c.
         -u <PLAYLIST_URL>, --url=<PLAYLIST_URL>     The playlist url. If not set, it will be asked when the script is ran, unless a raw json is passed with -j.
                     """
@@ -311,6 +335,8 @@ def main():
                 m3u_only = True
             if argument in ("-l", "--no-lyrics"):
                 lyrics = False
+            if argument in ("-d", "--difference"):
+                difference = True
             if argument in ("-j", "--json-raw"):
                 json_info_file = value
             if argument in ("-u", "--url"):
@@ -319,7 +345,9 @@ def main():
         if not url and not json_info_file:
             url = input("YouTube Music playlist url: ")
 
-        playlist = PlaylistDownloader(url, json_info_file, add_metadata, lyrics)
+        playlist = PlaylistDownloader(
+            url, json_info_file, add_metadata, lyrics, difference
+        )
         if not json_info_file:
             playlist.fetch_info(cache_raw)
         playlist.process_info()
